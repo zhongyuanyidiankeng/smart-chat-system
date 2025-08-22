@@ -10,6 +10,7 @@ import {
   removeFileRecord,
   initializeDatabase 
 } from '@/lib/database';
+import { fileApi, isServerMode } from '@/lib/apiClient';
 
 export function useFileUpload() {
   const [files, setFiles] = useState<UploadedFile[]>([]);
@@ -20,11 +21,17 @@ export function useFileUpload() {
   useEffect(() => {
     const initializeAndLoadFiles = async () => {
       try {
-        await initializeDatabase();
-        await loadFilesFromDatabase();
+        if (isServerMode()) {
+          // Server mode: use API
+          await loadFilesFromAPI();
+        } else {
+          // Local mode: use database
+          await initializeDatabase();
+          await loadFilesFromDatabase();
+        }
       } catch (error) {
-        console.error('Failed to initialize database, falling back to local storage:', error);
-        // 如果数据库初始化失败，使用本地存储
+        console.error('Failed to initialize, falling back to local storage:', error);
+        // 如果初始化失败，使用本地存储
         setFiles(LocalStorage.getUploadedFiles());
       } finally {
         setIsLoading(false);
@@ -33,6 +40,27 @@ export function useFileUpload() {
 
     initializeAndLoadFiles();
   }, []);
+
+  const loadFilesFromAPI = async () => {
+    try {
+      const response = await fileApi.getFiles();
+      const uploadedFiles: UploadedFile[] = response.files.map(file => ({
+        id: file.id,
+        name: file.name,
+        size: file.size,
+        type: file.type,
+        uploadDate: new Date(file.uploadDate),
+        status: file.status,
+        category: file.category,
+        dbId: file.dbId,
+        url: file.filePath,
+      }));
+      setFiles(uploadedFiles);
+    } catch (error) {
+      console.error('Failed to load files from API:', error);
+      throw error;
+    }
+  };
 
   const loadFilesFromDatabase = async () => {
     try {
@@ -61,6 +89,55 @@ export function useFileUpload() {
 
     setIsUploading(true);
 
+    try {
+      if (isServerMode()) {
+        // Server mode: use API
+        await uploadFilesViaAPI(fileList, selectedCategory);
+      } else {
+        // Local mode: use database
+        await uploadFilesLocally(fileList, selectedCategory);
+      }
+    } catch (error) {
+      console.error('Upload failed:', error);
+    } finally {
+      setIsUploading(false);
+    }
+  }, []);
+
+  const uploadFilesViaAPI = async (fileList: File[], selectedCategory?: FileCategory) => {
+    const category = selectedCategory || 'other';
+    
+    try {
+      const response = await fileApi.uploadFiles(fileList, category);
+      
+      // Add uploaded files to state
+      const newFiles: UploadedFile[] = response.results
+        .filter(result => result.success)
+        .map(result => ({
+          id: result.fileId!,
+          name: result.filename,
+          size: fileList.find(f => f.name === result.filename)?.size || 0,
+          type: fileList.find(f => f.name === result.filename)?.type || '',
+          uploadDate: new Date(),
+          status: 'completed' as const,
+          category,
+          dbId: result.dbId,
+        }));
+      
+      setFiles(prev => [...newFiles, ...prev]);
+      
+      // Handle failed uploads
+      const failedUploads = response.results.filter(result => !result.success);
+      if (failedUploads.length > 0) {
+        console.warn('Some files failed to upload:', failedUploads);
+      }
+    } catch (error) {
+      console.error('API upload failed:', error);
+      throw error;
+    }
+  };
+
+  const uploadFilesLocally = async (fileList: File[], selectedCategory?: FileCategory) => {
     const newFiles: UploadedFile[] = [];
 
     for (const file of fileList) {
@@ -145,16 +222,19 @@ export function useFileUpload() {
         }
       }
     }
-
-    setIsUploading(false);
-  }, []);
+  };
 
   const deleteFile = useCallback(async (fileId: string) => {
     try {
-      // 从数据库删除
-      await removeFileRecord(fileId);
+      if (isServerMode()) {
+        // Server mode: use API
+        await fileApi.deleteFile(fileId);
+      } else {
+        // Local mode: use database
+        await removeFileRecord(fileId);
+      }
     } catch (error) {
-      console.error('Failed to delete file from database:', error);
+      console.error('Failed to delete file:', error);
     }
 
     setFiles(prev => {
@@ -163,6 +243,49 @@ export function useFileUpload() {
       LocalStorage.saveUploadedFiles(updated);
       return updated;
     });
+  }, []);
+
+  const downloadFile = useCallback(async (fileId: string, fileName: string) => {
+    try {
+      if (isServerMode()) {
+        // Server mode: use API
+        const blob = await fileApi.downloadFile(fileId);
+        
+        // Create download link
+        const url = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = fileName;
+        document.body.appendChild(link);
+        link.click();
+        
+        // Cleanup
+        document.body.removeChild(link);
+        window.URL.revokeObjectURL(url);
+      } else {
+        // Local mode: Show informative message about limitations
+        alert('本地模式下文件仅保存在浏览器中，无法下载。\n要启用下载功能，请设置 NEXT_PUBLIC_USE_API=true 并重启服务。');
+      }
+    } catch (error) {
+      console.error('Failed to download file:', error);
+      const errorMessage = error instanceof Error ? error.message : '未知错误';
+      alert(`文件下载失败: ${errorMessage}\n\n请检查网络连接和服务器状态。`);
+    }
+  }, []);
+
+  const refreshFiles = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      if (isServerMode()) {
+        await loadFilesFromAPI();
+      } else {
+        await loadFilesFromDatabase();
+      }
+    } catch (error) {
+      console.error('Failed to refresh files:', error);
+    } finally {
+      setIsLoading(false);
+    }
   }, []);
 
   // 保存到本地存储作为备份
@@ -176,8 +299,9 @@ export function useFileUpload() {
     files,
     uploadFiles,
     deleteFile,
+    downloadFile,
     isUploading,
     isLoading,
-    refreshFiles: loadFilesFromDatabase,
+    refreshFiles,
   };
 }

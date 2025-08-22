@@ -158,3 +158,114 @@ export async function updateFileUploadStatus(fileId: string, status: 'completed'
 export async function removeFileRecord(fileId: string): Promise<void> {
   await db.deleteFile(fileId);
 }
+
+// Additional functions for API layer
+export async function saveFileToDatabase(fileData: {
+  name: string;
+  size: number;
+  type: string;
+  category: string;
+  filePath: string;
+  uploadDate: Date;
+  userId?: string;
+}): Promise<{ id: string; dbId: number }> {
+  const fileId = `file_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  
+  const record = await saveFileRecord({
+    fileId,
+    name: fileData.name,
+    originalName: fileData.name,
+    size: fileData.size,
+    mimeType: fileData.type,
+    category: fileData.category,
+    filePath: fileData.filePath,
+    userId: fileData.userId,
+  });
+  
+  await updateFileUploadStatus(fileId, 'completed');
+  
+  return {
+    id: fileId,
+    dbId: record.id
+  };
+}
+
+export async function getFilesFromDatabase(options: {
+  category?: string;
+  search?: string;
+  sortBy?: 'name' | 'uploadDate' | 'size';
+  sortOrder?: 'asc' | 'desc';
+  userId?: string;
+} = {}): Promise<any[]> {
+  let files = await getFileRecords(options.userId);
+  
+  // Apply filters
+  if (options.category) {
+    files = files.filter(file => file.category === options.category);
+  }
+  
+  if (options.search) {
+    files = files.filter(file => 
+      file.name.toLowerCase().includes(options.search!.toLowerCase()) ||
+      file.original_name.toLowerCase().includes(options.search!.toLowerCase())
+    );
+  }
+  
+  // Apply sorting
+  files.sort((a, b) => {
+    let comparison = 0;
+    
+    switch (options.sortBy) {
+      case 'name':
+        comparison = a.name.localeCompare(b.name);
+        break;
+      case 'uploadDate':
+        comparison = a.upload_date.getTime() - b.upload_date.getTime();
+        break;
+      case 'size':
+        comparison = a.size - b.size;
+        break;
+      default:
+        comparison = a.upload_date.getTime() - b.upload_date.getTime();
+    }
+    
+    return options.sortOrder === 'asc' ? comparison : -comparison;
+  });
+  
+  // Convert to client format
+  return files.map(file => ({
+    id: file.file_id,
+    dbId: file.id,
+    name: file.name,
+    size: file.size,
+    type: file.mime_type,
+    category: file.category,
+    uploadDate: file.upload_date,
+    status: file.status,
+    filePath: file.file_path
+  }));
+}
+
+export async function getFileFromDatabase(fileId: string): Promise<any | null> {
+  const record = await db.getFileById(fileId);
+  
+  if (!record) {
+    return null;
+  }
+  
+  return {
+    id: record.file_id,
+    dbId: record.id,
+    name: record.name,
+    size: record.size,
+    type: record.mime_type,
+    category: record.category,
+    uploadDate: record.upload_date,
+    status: record.status,
+    filePath: record.file_path
+  };
+}
+
+export async function deleteFileFromDatabase(fileId: string): Promise<void> {
+  await db.deleteFile(fileId);
+}

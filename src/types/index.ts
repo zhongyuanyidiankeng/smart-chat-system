@@ -8,6 +8,17 @@ export interface Message {
   ragInfo?: RagInfo;
 }
 
+// API-compatible chat message interface
+export interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: Date;
+}
+
+// API-compatible chat type
+export type ChatType = 'normal' | 'rag' | 'agent';
+
 export interface AgentProgress {
   step: number;
   totalSteps: number;
@@ -26,11 +37,14 @@ export interface RagInfo {
 
 export interface ChatSession {
   id: string;
-  title: string;
+  title: string; // Keep for backward compatibility
+  name?: string; // API-compatible property
+  type?: ChatType; // API-compatible property
   messages: Message[];
   createdAt: Date;
   mode: ChatMode;
   lastActivity: Date;
+  updatedAt?: Date; // API-compatible property
 }
 
 export interface UploadedFile {
@@ -65,6 +79,7 @@ export interface ChatContextType {
   currentSessionId: string | null;
   currentMode: ChatMode;
   isLoading: boolean;
+  isInitialized: boolean;
   createSession: () => void;
   switchSession: (sessionId: string) => void;
   sendMessage: (content: string) => Promise<void>;

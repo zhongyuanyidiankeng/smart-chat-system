@@ -2,10 +2,12 @@ import React, { useState, useMemo } from 'react';
 import { File, CheckCircle, AlertCircle, X, Search, Filter, FileText, Download, Loader2, RefreshCw } from 'lucide-react';
 import { UploadedFile, FileCategory } from '@/types';
 import { formatFileSize, formatDate } from '@/lib/utils';
+import { isServerMode } from '@/lib/apiClient';
 
 interface FileListProps {
   files: UploadedFile[];
   onDeleteFile: (fileId: string) => void;
+  onDownloadFile?: (fileId: string, fileName: string) => void;
   isLoading?: boolean;
   onRefresh?: () => void;
 }
@@ -38,7 +40,7 @@ const categoryLabels: Record<FileFilterCategory, string> = {
   other: '其他'
 };
 
-export function FileList({ files, onDeleteFile, isLoading = false, onRefresh }: FileListProps) {
+export function FileList({ files, onDeleteFile, onDownloadFile, isLoading = false, onRefresh }: FileListProps) {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<FileFilterCategory>('all');
   const [sortBy, setSortBy] = useState<'name' | 'date' | 'size'>('date');
@@ -258,11 +260,22 @@ export function FileList({ files, onDeleteFile, isLoading = false, onRefresh }: 
                       <CheckCircle className="w-5 h-5 text-green-500" />
                       <button
                         onClick={() => {
-                          // 这里可以添加下载功能
-                          console.log('下载文件:', file.name);
+                          if (onDownloadFile) {
+                            onDownloadFile(file.id, file.name);
+                          } else {
+                            console.log('下载功能不可用:', file.name);
+                          }
                         }}
-                        className="p-2 text-gray-400 hover:text-blue-500 transition-colors rounded-lg hover:bg-gray-100"
-                        title="下载文件"
+                        disabled={!onDownloadFile}
+                        className={`p-2 transition-colors rounded-lg hover:bg-gray-100 ${
+                          onDownloadFile 
+                            ? 'text-gray-400 hover:text-blue-500 cursor-pointer' 
+                            : 'text-gray-300 cursor-not-allowed'
+                        }`}
+                        title={onDownloadFile 
+                          ? (isServerMode() ? '下载文件' : '下载文件 (本地模式限制)')
+                          : '下载功能不可用'
+                        }
                       >
                         <Download className="w-4 h-4" />
                       </button>

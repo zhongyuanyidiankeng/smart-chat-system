@@ -1,15 +1,17 @@
 'use client';
 
-import React, { createContext, useReducer, useEffect } from 'react';
+import React, { createContext, useReducer, useEffect, useRef } from 'react';
 import { ChatSession, Message, ChatMode, ChatContextType } from '@/types';
 import { LocalStorage } from '@/lib/storage';
 import { generateId, sleep } from '@/lib/utils';
+import { chatApi, isServerMode } from '@/lib/apiClient';
 
 interface ChatState {
   sessions: ChatSession[];
   currentSessionId: string | null;
   currentMode: ChatMode;
   isLoading: boolean;
+  isInitialized: boolean; // Add initialization tracking
 }
 
 type ChatAction =
@@ -19,6 +21,7 @@ type ChatAction =
   | { type: 'ADD_MESSAGE'; payload: { sessionId: string; message: Message } }
   | { type: 'SET_MODE'; payload: ChatMode }
   | { type: 'SET_LOADING'; payload: boolean }
+  | { type: 'SET_INITIALIZED'; payload: boolean }
   | { type: 'UPDATE_SESSION'; payload: { sessionId: string; updates: Partial<ChatSession> } }
   | { type: 'DELETE_SESSION'; payload: string };
 
@@ -27,6 +30,7 @@ const initialState: ChatState = {
   currentSessionId: null,
   currentMode: 'normal',
   isLoading: false,
+  isInitialized: false,
 };
 
 function chatReducer(state: ChatState, action: ChatAction): ChatState {
@@ -93,6 +97,12 @@ function chatReducer(state: ChatState, action: ChatAction): ChatState {
         isLoading: action.payload,
       };
     
+    case 'SET_INITIALIZED':
+      return {
+        ...state,
+        isInitialized: action.payload,
+      };
+    
     case 'UPDATE_SESSION':
       return {
         ...state,
@@ -122,17 +132,47 @@ export const ChatContext = createContext<ChatContextType | undefined>(undefined)
 
 export function ChatProvider({ children }: { children: React.ReactNode }) {
   const [state, dispatch] = useReducer(chatReducer, initialState);
+  const sessionCreationRef = useRef<boolean>(false); // Lock for session creation
 
   // 加载数据
   useEffect(() => {
-    const sessions = LocalStorage.getChatSessions();
-    const currentSessionId = LocalStorage.getCurrentSessionId();
-    
-    dispatch({ type: 'LOAD_SESSIONS', payload: sessions });
-    
-    if (currentSessionId && sessions.find(s => s.id === currentSessionId)) {
-      dispatch({ type: 'SWITCH_SESSION', payload: currentSessionId });
-    }
+    const loadSessions = async () => {
+      try {
+        dispatch({ type: 'SET_INITIALIZED', payload: false });
+        
+        if (isServerMode()) {
+          // Server mode: load from API
+          const response = await chatApi.getSessions();
+          dispatch({ type: 'LOAD_SESSIONS', payload: response.sessions });
+        } else {
+          // Local mode: load from localStorage
+          const sessions = LocalStorage.getChatSessions();
+          const currentSessionId = LocalStorage.getCurrentSessionId();
+          
+          dispatch({ type: 'LOAD_SESSIONS', payload: sessions });
+          
+          if (currentSessionId && sessions.find(s => s.id === currentSessionId)) {
+            dispatch({ type: 'SWITCH_SESSION', payload: currentSessionId });
+          }
+        }
+      } catch (error) {
+        console.error('Failed to load sessions:', error);
+        // Fallback to localStorage
+        const sessions = LocalStorage.getChatSessions();
+        const currentSessionId = LocalStorage.getCurrentSessionId();
+        
+        dispatch({ type: 'LOAD_SESSIONS', payload: sessions });
+        
+        if (currentSessionId && sessions.find(s => s.id === currentSessionId)) {
+          dispatch({ type: 'SWITCH_SESSION', payload: currentSessionId });
+        }
+      } finally {
+        // Mark as initialized regardless of success/failure
+        dispatch({ type: 'SET_INITIALIZED', payload: true });
+      }
+    };
+
+    loadSessions();
   }, []);
 
   // 保存数据
@@ -144,7 +184,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     LocalStorage.setCurrentSessionId(state.currentSessionId);
   }, [state.currentSessionId]);
 
-  const createSession = () => {
+  const createSession = async () => {
     const newSession: ChatSession = {
       id: generateId(),
       title: `聊天 ${state.sessions.length + 1}`,
@@ -154,7 +194,19 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       mode: state.currentMode,
     };
     
-    dispatch({ type: 'CREATE_SESSION', payload: newSession });
+    if (isServerMode()) {
+      try {
+        const apiSession = await chatApi.createSession(newSession.title, newSession.mode);
+        const sessionWithApiData = { ...newSession, id: apiSession.id };
+        dispatch({ type: 'CREATE_SESSION', payload: sessionWithApiData });
+      } catch (error) {
+        console.error('Failed to create session via API:', error);
+        // Fallback to local creation
+        dispatch({ type: 'CREATE_SESSION', payload: newSession });
+      }
+    } else {
+      dispatch({ type: 'CREATE_SESSION', payload: newSession });
+    }
   };
 
   const switchSession = (sessionId: string) => {
@@ -162,47 +214,154 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   };
 
   const sendMessage = async (content: string) => {
+    // Wait for initialization to complete
+    if (!state.isInitialized) {
+      console.warn('Chat system not initialized yet, waiting...');
+      // Wait a bit and try again
+      await new Promise(resolve => setTimeout(resolve, 100));
+      if (!state.isInitialized) {
+        console.error('Chat system initialization timeout');
+        return;
+      }
+    }
+    
     let sessionId = state.currentSessionId;
-    let targetSession: ChatSession;
+    let targetSession: ChatSession | undefined;
     
     // 如果没有当前会话，创建新会话
     if (!sessionId) {
-      const newSession: ChatSession = {
-        id: generateId(),
-        title: `聊天 ${state.sessions.length + 1}`,
-        messages: [],
-        createdAt: new Date(),
-        lastActivity: new Date(),
-        mode: state.currentMode,
-      };
+      // Prevent concurrent session creation
+      if (sessionCreationRef.current) {
+        console.log('Session creation already in progress, waiting...');
+        // Wait for ongoing session creation
+        let retries = 0;
+        while (sessionCreationRef.current && retries < 50) { // Max 5 seconds
+          await new Promise(resolve => setTimeout(resolve, 100));
+          retries++;
+        }
+        // Re-check if session was created
+        if (state.currentSessionId) {
+          sessionId = state.currentSessionId;
+          const foundSession = state.sessions.find(s => s.id === sessionId);
+          if (foundSession) {
+            targetSession = foundSession;
+            // Session was created by another call, proceed with it
+            console.log('Using session created by concurrent call:', sessionId);
+          }
+        }
+      }
       
-      dispatch({ type: 'CREATE_SESSION', payload: newSession });
-      sessionId = newSession.id;
-      targetSession = newSession;
+      // If still no session, create one
+      if (!sessionId || !targetSession) {
+        sessionCreationRef.current = true;
+        
+        try {
+          const newSession: ChatSession = {
+            id: generateId(),
+            title: `聊天 ${state.sessions.length + 1}`,
+            messages: [],
+            createdAt: new Date(),
+            lastActivity: new Date(),
+            mode: state.currentMode,
+          };
+          
+          if (isServerMode()) {
+            try {
+              // Create session via API first
+              const apiSession = await chatApi.createSession(newSession.title, newSession.mode);
+              const sessionWithApiData = { ...newSession, id: apiSession.id };
+              dispatch({ type: 'CREATE_SESSION', payload: sessionWithApiData });
+              sessionId = apiSession.id;
+              targetSession = sessionWithApiData;
+            } catch (error) {
+              console.error('Failed to create session via API, using local session:', error);
+              // Fallback to local creation
+              dispatch({ type: 'CREATE_SESSION', payload: newSession });
+              sessionId = newSession.id;
+              targetSession = newSession;
+            }
+          } else {
+            // Local mode: create session locally
+            dispatch({ type: 'CREATE_SESSION', payload: newSession });
+            sessionId = newSession.id;
+            targetSession = newSession;
+          }
+        } finally {
+          sessionCreationRef.current = false;
+        }
+      }
     } else {
-      targetSession = state.sessions.find(s => s.id === sessionId)!;
+      const foundSession = state.sessions.find(s => s.id === sessionId);
+      if (!foundSession) {
+        console.error(`Session ${sessionId} not found, creating new session`);
+        // If session not found, create a new one
+        const newSession: ChatSession = {
+          id: generateId(),
+          title: `聊天 ${state.sessions.length + 1}`,
+          messages: [],
+          createdAt: new Date(),
+          lastActivity: new Date(),
+          mode: state.currentMode,
+        };
+        dispatch({ type: 'CREATE_SESSION', payload: newSession });
+        sessionId = newSession.id;
+        targetSession = newSession;
+      } else {
+        targetSession = foundSession;
+      }
+    }
+    
+    // Ensure we have a valid session and target before proceeding
+    if (!sessionId || !targetSession) {
+      console.error('Failed to create or find session');
+      return;
     }
 
-    if (!sessionId || !targetSession) return;
-
-    // 添加用户消息
-    const userMessage: Message = {
-      id: generateId(),
-      type: 'user',
-      content,
-      timestamp: new Date(),
-      mode: targetSession.mode, // Use session's mode instead of global currentMode
-    };
-
-    dispatch({ type: 'ADD_MESSAGE', payload: { sessionId, message: userMessage } });
     dispatch({ type: 'SET_LOADING', payload: true });
 
     try {
-      // 模拟系统响应
-      await sleep(1000);
+      if (isServerMode()) {
+        // Server mode: use API
+        const response = await chatApi.sendMessage(sessionId, content, targetSession.mode);
+        
+        // Convert API messages to local format and add to state
+        const userMessage: Message = {
+          id: response.userMessage.id,
+          type: 'user',
+          content: response.userMessage.content,
+          timestamp: new Date(response.userMessage.timestamp),
+          mode: targetSession.mode,
+        };
+        
+        const aiMessage: Message = {
+          id: response.aiMessage.id,
+          type: 'system',
+          content: response.aiMessage.content,
+          timestamp: new Date(response.aiMessage.timestamp),
+          mode: targetSession.mode,
+        };
+        
+        dispatch({ type: 'ADD_MESSAGE', payload: { sessionId, message: userMessage } });
+        dispatch({ type: 'ADD_MESSAGE', payload: { sessionId, message: aiMessage } });
+      } else {
+        // Local mode: generate responses locally
+        // 添加用户消息
+        const userMessage: Message = {
+          id: generateId(),
+          type: 'user',
+          content,
+          timestamp: new Date(),
+          mode: targetSession.mode,
+        };
 
-      const systemMessage = generateSystemResponse(content, targetSession.mode); // Use session's mode
-      dispatch({ type: 'ADD_MESSAGE', payload: { sessionId, message: systemMessage } });
+        dispatch({ type: 'ADD_MESSAGE', payload: { sessionId, message: userMessage } });
+
+        // 模拟系统响应
+        await sleep(1000);
+
+        const systemMessage = generateSystemResponse(content, targetSession.mode);
+        dispatch({ type: 'ADD_MESSAGE', payload: { sessionId, message: systemMessage } });
+      }
     } catch (error) {
       console.error('Error sending message:', error);
     } finally {
@@ -210,7 +369,15 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const updateSessionTitle = (sessionId: string, newTitle: string) => {
+  const updateSessionTitle = async (sessionId: string, newTitle: string) => {
+    if (isServerMode()) {
+      try {
+        await chatApi.updateSession(sessionId, { name: newTitle });
+      } catch (error) {
+        console.error('Failed to update session title via API:', error);
+      }
+    }
+    
     dispatch({ 
       type: 'UPDATE_SESSION', 
       payload: { 
@@ -220,7 +387,15 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     });
   };
 
-  const deleteSession = (sessionId: string) => {
+  const deleteSession = async (sessionId: string) => {
+    if (isServerMode()) {
+      try {
+        await chatApi.deleteSession(sessionId);
+      } catch (error) {
+        console.error('Failed to delete session via API:', error);
+      }
+    }
+    
     dispatch({ type: 'DELETE_SESSION', payload: sessionId });
   };
 
@@ -235,6 +410,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         currentSessionId: state.currentSessionId,
         currentMode: state.currentMode,
         isLoading: state.isLoading,
+        isInitialized: state.isInitialized,
         createSession,
         switchSession,
         sendMessage,

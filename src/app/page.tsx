@@ -10,7 +10,7 @@ import { useFileUpload } from '@/hooks/useFileUpload';
 
 export default function HomePage() {
   const [currentView, setCurrentView] = useState<ViewType>('chat');
-  const { files, uploadFiles, deleteFile, isUploading, isLoading, refreshFiles } = useFileUpload();
+  const { files, uploadFiles, deleteFile, downloadFile, isUploading, isLoading, refreshFiles } = useFileUpload();
 
   return (
     <div className="flex h-screen bg-gray-50 overflow-hidden">
@@ -55,6 +55,7 @@ export default function HomePage() {
                     <FileList 
                       files={files} 
                       onDeleteFile={deleteFile}
+                      onDownloadFile={downloadFile}
                       isLoading={isLoading}
                       onRefresh={refreshFiles}
                     />

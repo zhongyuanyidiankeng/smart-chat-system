@@ -18,19 +18,31 @@ export function ChatInterface() {
       {/* 消息列表区域 - 带边框 */}
       <div className="flex-1 overflow-hidden bg-gray-50 px-6 py-4">
         <div className="h-full border border-gray-200 rounded-lg bg-white">
-          {currentSession && currentSession.messages.length > 0 ? (
+          {hasMessages ? (
             <MessageList 
               messages={currentSession.messages} 
               isLoading={isLoading}
             />
           ) : (
             <div className="flex items-center justify-center h-full">
-              <div className="text-center">
-                <div className="text-4xl mb-4">💬</div>
-                <h3 className="text-lg font-medium text-gray-900 mb-2">有什么可以帮助你的吗</h3>
-                <p className="text-gray-500 text-sm max-w-md">
-                  请在下方输入框中输入您的问题
+              <div className="text-center max-w-2xl mx-auto px-4">
+                <div className="text-6xl mb-6">💬</div>
+                <h1 className="text-2xl font-semibold text-gray-900 mb-3">有什么可以帮助你的吗</h1>
+                <p className="text-gray-600 text-base mb-8 leading-relaxed">
+                  选择下方的会话模式，然后输入您的问题开始对话
                 </p>
+                
+                {/* 初始界面的模式选择器 - 更突出的显示 */}
+                <div className="mb-8">
+                  <div className="bg-gray-50 rounded-xl p-6 border border-gray-200">
+                    <h3 className="text-sm font-medium text-gray-700 mb-4 text-left">选择会话模式：</h3>
+                    <ModeSelector 
+                      disabled={false}
+                      currentSessionMode={undefined}
+                      compact={false}
+                    />
+                  </div>
+                </div>
               </div>
             </div>
           )}
@@ -40,13 +52,16 @@ export function ChatInterface() {
       {/* 消息输入区域 - 包含模式选择器 */}
       <div className="flex-shrink-0 p-6 border-t border-gray-200 bg-white">
         <div className="max-w-4xl mx-auto">
-          {/* 模式选择器作为小工具 */}
-          <div className="mb-4">
-            <ModeSelector 
-              disabled={isModeSelectorDisabled}
-              currentSessionMode={currentSession?.mode}
-            />
-          </div>
+          {/* 对于已有消息的会话，显示简化的模式选择器 */}
+          {hasMessages && (
+            <div className="mb-2">
+              <ModeSelector 
+                disabled={isModeSelectorDisabled}
+                currentSessionMode={currentSession?.mode}
+                compact={true}
+              />
+            </div>
+          )}
           
           {/* 消息输入 */}
           <MessageInput 
