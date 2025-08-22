@@ -1,6 +1,6 @@
 'use client';
 
-import React, { createContext, useContext, useReducer, useEffect } from 'react';
+import React, { createContext, useReducer, useEffect } from 'react';
 import { ChatSession, Message, ChatMode, ChatContextType } from '@/types';
 import { LocalStorage } from '@/lib/storage';
 import { generateId, sleep } from '@/lib/utils';
@@ -19,7 +19,8 @@ type ChatAction =
   | { type: 'ADD_MESSAGE'; payload: { sessionId: string; message: Message } }
   | { type: 'SET_MODE'; payload: ChatMode }
   | { type: 'SET_LOADING'; payload: boolean }
-  | { type: 'UPDATE_SESSION'; payload: { sessionId: string; updates: Partial<ChatSession> } };
+  | { type: 'UPDATE_SESSION'; payload: { sessionId: string; updates: Partial<ChatSession> } }
+  | { type: 'DELETE_SESSION'; payload: string };
 
 const initialState: ChatState = {
   sessions: [],
@@ -48,7 +49,7 @@ function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return {
         ...state,
         currentSessionId: action.payload,
-        currentMode: session?.mode || 'normal',
+        currentMode: session?.mode || state.currentMode,
       };
     
     case 'ADD_MESSAGE':
@@ -66,6 +67,14 @@ function chatReducer(state: ChatState, action: ChatAction): ChatState {
       };
     
     case 'SET_MODE':
+      // Only allow mode changes for new sessions (no messages) or when no session is active
+      const currentSession = state.currentSessionId ? state.sessions.find(s => s.id === state.currentSessionId) : null;
+      const canChangeMode = !currentSession || currentSession.messages.length === 0;
+      
+      if (!canChangeMode) {
+        return state; // Don't allow mode change for sessions with messages
+      }
+      
       return {
         ...state,
         currentMode: action.payload,
@@ -92,6 +101,16 @@ function chatReducer(state: ChatState, action: ChatAction): ChatState {
             ? { ...session, ...action.payload.updates }
             : session
         ),
+      };
+    
+    case 'DELETE_SESSION':
+      const remainingSessions = state.sessions.filter(session => session.id !== action.payload);
+      const wasCurrentSession = state.currentSessionId === action.payload;
+      
+      return {
+        ...state,
+        sessions: remainingSessions,
+        currentSessionId: wasCurrentSession ? null : state.currentSessionId,
       };
     
     default:
@@ -143,13 +162,28 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   };
 
   const sendMessage = async (content: string) => {
-    if (!state.currentSessionId) {
-      createSession();
-      await sleep(100); // 等待会话创建
+    let sessionId = state.currentSessionId;
+    let targetSession: ChatSession;
+    
+    // 如果没有当前会话，创建新会话
+    if (!sessionId) {
+      const newSession: ChatSession = {
+        id: generateId(),
+        title: `聊天 ${state.sessions.length + 1}`,
+        messages: [],
+        createdAt: new Date(),
+        lastActivity: new Date(),
+        mode: state.currentMode,
+      };
+      
+      dispatch({ type: 'CREATE_SESSION', payload: newSession });
+      sessionId = newSession.id;
+      targetSession = newSession;
+    } else {
+      targetSession = state.sessions.find(s => s.id === sessionId)!;
     }
 
-    const sessionId = state.currentSessionId || state.sessions[0]?.id;
-    if (!sessionId) return;
+    if (!sessionId || !targetSession) return;
 
     // 添加用户消息
     const userMessage: Message = {
@@ -157,18 +191,37 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       type: 'user',
       content,
       timestamp: new Date(),
-      mode: state.currentMode,
+      mode: targetSession.mode, // Use session's mode instead of global currentMode
     };
 
     dispatch({ type: 'ADD_MESSAGE', payload: { sessionId, message: userMessage } });
     dispatch({ type: 'SET_LOADING', payload: true });
 
-    // 模拟系统响应
-    await sleep(1000);
+    try {
+      // 模拟系统响应
+      await sleep(1000);
 
-    const systemMessage = generateSystemResponse(content, state.currentMode);
-    dispatch({ type: 'ADD_MESSAGE', payload: { sessionId, message: systemMessage } });
-    dispatch({ type: 'SET_LOADING', payload: false });
+      const systemMessage = generateSystemResponse(content, targetSession.mode); // Use session's mode
+      dispatch({ type: 'ADD_MESSAGE', payload: { sessionId, message: systemMessage } });
+    } catch (error) {
+      console.error('Error sending message:', error);
+    } finally {
+      dispatch({ type: 'SET_LOADING', payload: false });
+    }
+  };
+
+  const updateSessionTitle = (sessionId: string, newTitle: string) => {
+    dispatch({ 
+      type: 'UPDATE_SESSION', 
+      payload: { 
+        sessionId, 
+        updates: { title: newTitle } 
+      } 
+    });
+  };
+
+  const deleteSession = (sessionId: string) => {
+    dispatch({ type: 'DELETE_SESSION', payload: sessionId });
   };
 
   const setMode = (mode: ChatMode) => {
@@ -186,6 +239,8 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         switchSession,
         sendMessage,
         setMode,
+        updateSessionTitle,
+        deleteSession,
       }}
     >
       {children}
@@ -209,15 +264,17 @@ function generateSystemResponse(userInput: string, mode: ChatMode): Message {
         ...baseMessage,
         content: `正在为您执行智能体任务："${userInput}"`,
         progress: {
-          step: 3,
-          totalSteps: 3,
-          currentTask: 'agent执行完成',
+          step: 4,
+          totalSteps: 4,
+          currentTask: '智能体执行完成',
           details: [
-            '✅ 任务一：爬取多个文档已完成，下载4个文件',
-            '✅ 任务二：添加知识库已完成',
-            '✅ 任务三：agent工作流执行完成'
+            '✅ 第1步：Python脚本 - 数据采集和分析完成',
+            '✅ 第2步：Python脚本 - 数据处理和清洗完成',
+            '✅ 第3步：Python脚本 - 机器学习模型训练完成',
+            '✅ 第4步：HTTP请求 - 结果推送和反馈收集完成'
           ],
-          status: 'completed'
+          status: 'completed',
+          stepType: 'http'
         }
       };
     
